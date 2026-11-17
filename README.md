@@ -1,8 +1,8 @@
 # Slurm Cluster Setup Scripts
 
-Three Bash scripts that turn fresh Ubuntu machines into a working **Slurm** cluster: one head node plus any number of workers, with static networking, time sync, passwordless SSH, Munge authentication and shared NFS storage.
+Bash scripts that turn fresh Ubuntu machines into a working **Slurm** cluster: one head node plus any number of workers, with static networking, time sync, passwordless SSH, Munge authentication and shared NFS storage.
 
-Built for a Physics lab computational cluster. Every step prints a clear `[ OK ]` / `[WARN]` / `[FAIL]` message with a hint on how to fix it, and the scripts are safe to re-run. A fourth, optional script (`node-setup-in-head.sh`) repairs nodes that were set up with an older version.
+Built for a Physics lab computational cluster. Every step prints a clear `[ OK ]` / `[WARN]` / `[FAIL]` message with a hint on how to fix it, and the scripts are safe to re-run. `head-setup.sh` has three modes (setup, `slurm`, `reboot`), and an optional third script (`node-setup-in-head.sh`) repairs nodes that were set up with an older version.
 
 > Want to understand every step by hand first? See the original manual guide: [Setting Up a Slurm Cluster: Complete Beginners Guide](https://github.com/sahan-maker). These scripts automate that guide.
 
@@ -14,7 +14,7 @@ Built for a Physics lab computational cluster. Every step prints a clear `[ OK ]
 2. [Repository Layout](#repository-layout)
 3. [Requirements](#requirements)
 4. [BIOS Setup: Boot Menu and Auto Power-On](#bios-setup-boot-menu-and-auto-power-on)
-5. [Cluster Setup Generator (optional)](#cluster-setup-generator-optional)
+5. [Cluster Setup Generator and slurm.conf Tool](#cluster-setup-generator-and-slurmconf-tool)
 6. [Step-by-Step Installation](#step-by-step-installation)
 7. [Adding or Repairing a Single Node](#adding-or-repairing-a-single-node)
 8. [slurm.conf Field Reference](#slurmconf-field-reference)
@@ -65,13 +65,11 @@ flowchart LR
 ```
 .
 ├── README.md
-├── Cluster Setup Generator.html   # optional: pre-fills the script questions
+├── Cluster Setup Generator.html          # Slurm 26.05 Configuration Tool + Cluster Setup Generator (one page)
 ├── scripts/
-│   ├── node-setup.sh              # run on every worker (first)
-│   ├── head-setup.sh              # run on the head
-│   ├── slurm-setup.sh             # run on the head (last)
-│   ├── node-setup-in-head.sh      # optional: head-setup.sh + turns off automatic upgrades on all machines
-│   └── rebootall.sh               # run on the head: reboots every worker node (optional helper)
+│   ├── node-setup.sh                     # run on every worker (first)
+│   ├── head-setup.sh                     # run on the head: setup, then "slurm" and "reboot" modes
+│   └── node-setup-in-head.sh             # optional: head-setup.sh + turns off automatic upgrades on all machines
 └── images/
     ├── cluster-front.jpg
     └── cluster-rear.jpg
@@ -84,7 +82,7 @@ On the USB drive, put the scripts in a folder named **`Slurm`** (the commands be
 ## Requirements
 
 - Ubuntu 22.04 LTS
-  - Head: Desktop (GUI) edition, so you can open the Slurm configurator in a browser
+  - Head: Desktop (GUI) edition, so you can open the generator page in a browser (any PC with a browser works too)
   - Workers: Server edition (no GUI)
 - Head hostname must be exactly **`head`**; workers use a prefix and a number (`node0`, `node1`, ...)
 - **The same username and password on every machine** (script default: `elec_cluster`)
@@ -149,9 +147,9 @@ Optional settings in the same menu:
 
 ---
 
-## Cluster Setup Generator (optional)
+## Cluster Setup Generator and slurm.conf Tool
 
-`Cluster Setup Generator.html` lets you type your cluster details **once** so the scripts do not ask you again. This reduces the interaction time during setup.
+`Cluster Setup Generator.html` is one page with two tabs. **Tab 1** lets you type your cluster details **once** so the scripts do not ask you again. **Tab 2** is the **Slurm 26.05 Configuration Tool**: it builds `slurm.conf`, with node groups for machines that are not identical. One zip contains the scripts and `slurm.conf` together. The page works offline in any browser.
 
 ### How to use it
 
@@ -160,31 +158,33 @@ Optional settings in the same menu:
    - head IP
    - node0 IP
    - node name prefix
-   - first node index and how many nodes
+   - first node index and how many nodes (the **whole** cluster, for example 15 for node0 to node14)
    - gateway and DNS (they are filled in for you and you can edit them)
    - netmask bits
-2. Click **Download all 3 scripts (.zip)**, then run:
+
+   The **IP plan** table shows the IP of every node (node0's IP plus the node number, skipping the head). If a node has a different IP, type it in that node's row. The row is marked `custom`, and the generated scripts use your IP for that node. The page warns about invalid or duplicate IPs, and **Reset all IPs to the pattern** clears your changes.
+2. On tab 2, build `slurm.conf` (see [Part C](#part-c-create-slurmconf)). Then click **Download everything (.zip)** at the top of the page (keep **include slurm.conf** ticked), and run:
 
    ```bash
    unzip cluster-scripts.zip
    ```
 
    It is a zip because the page cannot download `.sh` files on their own. If the download is blocked, the page has a copy button for each script.
-3. Put the three scripts in the **`Slurm`** folder on your USB drive and continue with the [installation steps](#step-by-step-installation).
+3. Put the scripts in the **`Slurm`** folder on your USB drive and continue with the [installation steps](#step-by-step-installation).
 
 ### What each script still asks you (generated scripts)
 
 | Script | What it still asks |
 | :--- | :--- |
-| `node-setup.sh` (on each worker) | Only the node name, e.g. `node3`. Node IP, gateway, DNS and interface come from your values, and the final "Continue?" question is removed. |
-| `head-setup.sh` | Only the password. The "Continue?" question is removed. |
-| `slurm-setup.sh` | Only the password. |
+| `node-setup.sh` (on each worker) | The node name, e.g. `node3`, and Enter to accept the calculated IP (type a different one if that node does not follow the pattern). Gateway, DNS and interface come from your values, and the final "Continue?" question is removed. |
+| `head-setup.sh` | The password and "Set up only ONE node?" (Enter = all nodes). In single-node setup it also asks for that node's IP. The "Continue?" question is removed. The `slurm` and `reboot` modes work the same way. |
+| `node-setup-in-head.sh` | The same as `head-setup.sh`. It also turns off automatic upgrades on the head and the nodes. |
 
-**Automatic updates:** `node-setup.sh` turns off automatic updates on each worker. It disables and masks the `apt-daily` timers and `unattended-upgrades`, and writes `20auto-upgrades` with zeros. The scripts in `scripts/` do this too.
+**Automatic updates and sleep:** `node-setup.sh` turns off automatic updates and sleep on each worker. It disables and masks the `apt-daily` timers and `unattended-upgrades`, and writes `20auto-upgrades` with zeros. The generated scripts have all the same error handling as the ones in `scripts/`.
 
 **Unchanged:** the generated scripts are the original scripts with the typed questions replaced by your values, so all checks and messages are the same. One question is kept on purpose: the duplicate-IP warning in `node-setup.sh`, because that needs a human decision.
 
-**Run order:** `node-setup.sh` on every worker, then `head-setup.sh`, then create `slurm.conf`, then `slurm-setup.sh`.
+**Run order:** `node-setup.sh` on every worker, then `head-setup.sh`, then create `slurm.conf`, then `head-setup.sh slurm`. The generated scripts replace the ones in `scripts/`; do not mix the two sets.
 
 > The scripts in `scripts/` are the interactive versions and ask every question. Use the generator if you want fewer prompts.
 
@@ -192,7 +192,7 @@ Optional settings in the same menu:
 
 ## Step-by-Step Installation
 
-Run the steps **in this order**: all workers first, then the head, then `slurm.conf`, then `slurm-setup.sh`.
+Run the steps **in this order**: all workers first, then the head, then `slurm.conf`, then `head-setup.sh slurm`.
 
 ### Part A: Set up every worker node (one by one)
 
@@ -330,44 +330,31 @@ bash ./head-setup.sh
 
 Enter your password when asked. (Without the generator it also asks: cluster user, head IP, node name prefix, first and last node index of the **whole cluster**, node0's IP, and whether to set up only one node. For the whole cluster just press Enter at that last question.)
 
-For every worker it sets up passwordless SSH, Chrony, `/etc/hosts`, the Slurm packages, one shared Munge key (checked and tested in both directions), and NFS (`/mnt/shared` exported from the head and mounted on each worker). A summary table at the end shows which nodes are OK or FAILED. Fix any failed node and run the script again.
+For every worker it sets up passwordless SSH, Chrony, `/etc/hosts`, the Slurm packages, one shared Munge key (checked and tested in both directions), and NFS (`/mnt/shared` exported from the head and mounted on each worker). A summary table at the end shows which nodes are OK or FAILED. Fix any failed node and run the script again. If `/etc/slurm/slurm.conf` does not exist yet, the script then tells you to create it (Part C) and to run `bash ./head-setup.sh slurm` afterwards (Part D). If it already exists, the script offers to start Slurm right away.
 
 ---
 
 ### Part C: Create `slurm.conf`
 
-**1.** On the head, open the Slurm configurator in a web browser:
+**Recommended: tab 2 of `Cluster Setup Generator.html`** (the Slurm 26.05 Configuration Tool). Do it on any PC with a browser, before you download the zip.
 
-```bash
-xdg-open /usr/share/doc/slurmctld/slurm-wlm-configurator.html
-```
+1. Open **2. slurm.conf (26.05)**. The node names are filled in from tab 1.
+2. Click **Use safe settings for the Ubuntu apt package**, unless you run Slurm 26.05 (check with `slurmctld -V` on the head). Ubuntu's older package can fail with cgroup settings.
+3. Under **Compute nodes**, make one row per hardware type. The quick way: run the command shown on the page on the head, paste its output into the box, and click **Build groups from these lines**. Nodes with the same hardware are grouped, and `RealMemory` is set to 95% of the smallest value in each group.
+4. Optional: click **Add head as compute node** to use the head for jobs too (it gets `Weight=100`, so workers are used first).
+5. Check the text in the **slurm.conf** box, then download the zip with **include slurm.conf** ticked. Keep `slurm.conf` in the same folder as `head-setup.sh`. `bash ./head-setup.sh slurm` installs it as `/etc/slurm/slurm.conf` on the head and copies it to every node.
 
-(or open `/usr/share/doc/slurmctld/slurm-wlm-configurator.html` from Firefox).
+**Manual way (without the page):**
 
-**2.** On a worker, run `lscpu` to get the hardware values, and `slurmd -C` to get the real `RealMemory`.
+1. On the head, open the Slurm configurator that matches the installed version (`slurm-wlm-configurator.html` from the Slurm packages; see [Troubleshooting](#troubleshooting) if the file is missing).
+2. On a worker, run `slurmd -C` to get the real CPU and `RealMemory` values.
+3. Fill in the fields as in the [field reference](#slurmconf-field-reference), give nodes with different hardware their own `NodeName=` line, and paste the result into the config file on the head:
 
-**3.** Fill in only these fields:
+   ```bash
+   sudo nano /etc/slurm/slurm.conf
+   ```
 
-| Field | Value |
-| :--- | :--- |
-| ClusterName | Your cluster name |
-| SlurmctldHost | `head` |
-| NodeName | e.g. `node[0-7]` (must match your real node names) |
-| CPUs, Sockets, CoresPerSocket, ThreadsPerCore | From `lscpu` |
-| RealMemory | A little **below** the smallest value `slurmd -C` reports on any node |
-| ProctrackType | `LinuxProc` |
-
-If one node has different hardware (for example less RAM), give it its own `NodeName=` line. Otherwise Slurm marks it `inval`. See [Mixed Hardware](#mixed-hardware-nodes-that-are-not-identical) and the full [field reference](#slurmconf-field-reference).
-
-**4.** Click **Submit** and copy the text that appears.
-
-**5.** Paste it into the config file on the head:
-
-```bash
-sudo nano /etc/slurm/slurm.conf
-```
-
-Save with `Ctrl+O`, `Enter`, then exit with `Ctrl+X`.
+   Save with `Ctrl+O`, `Enter`, then exit with `Ctrl+X`.
 
 ---
 
@@ -382,10 +369,10 @@ cd /mnt/usb/Slurm/
 **2.** Run the final script as your **normal user**:
 
 ```bash
-bash ./slurm-setup.sh
+bash ./head-setup.sh slurm
 ```
 
-Enter your password when asked. It checks every node (SSH, `slurmd`, Munge key, clock), copies `slurm.conf` to each worker (checksum verified), creates the Slurm directories, starts `slurmd` on the workers and `slurmctld` on the head, then waits for the nodes to register and explains any node that is not `idle`. For the whole cluster, press Enter at the "Set up only ONE node?" question.
+Enter your password when asked. If `/etc/slurm/slurm.conf` does not exist yet, it installs the `slurm.conf` that sits next to the script. It checks every node (SSH, `slurmd`, Munge key, clock), copies `slurm.conf` to each worker (checksum verified), creates the Slurm directories, starts `slurmd` on the workers and `slurmctld` on the head, then waits for the nodes to register and explains any node that is not `idle`. For the whole cluster, press Enter at the "Set up only ONE node?" question.
 
 **3.** Check the cluster:
 
@@ -399,20 +386,20 @@ All nodes should show **idle**. That is it, the cluster is ready.
 
 ## Adding or Repairing a Single Node
 
-If one node was missing or broken (powered off, wrong IP, reinstalled), you do not need to set up the whole cluster again. `head-setup.sh` and `slurm-setup.sh` both have a single-node mode, and the other nodes are not touched.
+If one node was missing or broken (powered off, wrong IP, reinstalled), you do not need to set up the whole cluster again. `head-setup.sh` and `head-setup.sh slurm` both have a single-node mode, and the other nodes are not touched.
 
 1. **On the node:** run `sudo bash node-setup.sh`, then `sudo reboot`.
 2. **On the head:** run `bash ./head-setup.sh`.
    - First and last node index: the **whole cluster** (for example `0` and `14`).
    - At `Set up only ONE node?` enter just the number, for example `14`.
    - It then asks for that node's IP. Press Enter to accept the calculated one, or type the real IP if the node does not follow the pattern.
-3. **On the head:** run `bash ./slurm-setup.sh` and answer the same way.
+3. **On the head:** run `bash ./head-setup.sh slurm` and answer the same way.
 
 What single-node mode does and does not do:
 
 - `/etc/hosts` on the head and on the node still lists the whole cluster. The IPs head already has for the other nodes are kept; only the selected node's line is new or changed.
-- If you edited `slurm.conf` (for example to add the new node), every node needs the new copy. In that case run `slurm-setup.sh` for the **whole cluster** (press Enter at the single-node question) so all nodes get the same file.
-- A drained node with the old `NO NETWORK ADDRESS FOUND` flag is resumed automatically by `slurm-setup.sh`.
+- If you edited `slurm.conf` (for example to add the new node), every node needs the new copy. In that case run `head-setup.sh slurm` for the **whole cluster** (press Enter at the single-node question) so all nodes get the same file.
+- A drained node with the old `NO NETWORK ADDRESS FOUND` flag is resumed automatically by `head-setup.sh slurm`.
 
 For nodes that were set up with an **older** `node-setup.sh` (one without step 2b), run `node-setup-in-head.sh` instead of `head-setup.sh`. It does everything `head-setup.sh` does and first turns off automatic upgrades on the head and on every selected node.
 
@@ -420,7 +407,7 @@ For nodes that were set up with an **older** `node-setup.sh` (one without step 2
 
 ## slurm.conf Field Reference
 
-What each field of the Slurm configurator means, and a sensible value for a small lab cluster. Open the configurator that matches your installed Slurm version (on the head: `/usr/share/doc/slurmctld/slurm-wlm-configurator.html`). The online tool at <https://slurm.schedmd.com/configurator.html> supports only one Slurm version, so it may write options that an older package does not understand. Prefer the local file.
+What each field of the Slurm configurator (tab 2 of the generator page) means, and a sensible value for a small lab cluster. Open the configurator that matches your installed Slurm version (on the head: `/usr/share/doc/slurmctld/slurm-wlm-configurator.html`). The online tool at <https://slurm.schedmd.com/configurator.html> supports only one Slurm version, so it may write options that an older package does not understand. Prefer the local file.
 
 | Field | What it does | Suggested value |
 | :--- | :--- | :--- |
@@ -456,10 +443,10 @@ What each field of the Slurm configurator means, and a sensible value for a smal
 
 Notes:
 
-- The directory and log paths above are the defaults `slurm-setup.sh` uses. If you change them in `slurm.conf`, the script reads the new paths from the file.
+- The directory and log paths above are the defaults `head-setup.sh slurm` uses. If you change them in `slurm.conf`, the script reads the new paths from the file.
 - To count memory when placing jobs, add `SelectTypeParameters=CR_Core_Memory` to `slurm.conf` by hand.
 - `ProctrackType=Cgroup` enforces CPU and memory limits properly, but older Slurm packages may not work with the cgroup version Ubuntu 22.04 uses. `LinuxProc` is the safe choice.
-- `slurm.conf` must be identical on every node. After any edit, run `slurm-setup.sh` for the whole cluster.
+- `slurm.conf` must be identical on every node. After any edit, run `head-setup.sh slurm` for the whole cluster.
 
 ---
 
@@ -475,7 +462,7 @@ for n in node{0..14}; do
 done
 ```
 
-Paste the lines into `/etc/slurm/slurm.conf`, keep one partition line, then run `slurm-setup.sh` for the whole cluster:
+Paste the lines into `/etc/slurm/slurm.conf`, keep one partition line, then run `head-setup.sh slurm` for the whole cluster:
 
 ```
 PartitionName=main Nodes=node[0-14] Default=YES MaxTime=INFINITE State=UP
@@ -498,7 +485,7 @@ By default the head only schedules. To also use its CPUs for jobs:
 
 1. On the head, run `slurmd -C` and add a `NodeName=head ...` line to `slurm.conf`. Add `head` to the partition's node list, for example `Nodes=node[0-14],head`.
 2. Make sure `slurmd` is installed on the head (`sudo apt install -y slurmd`; `slurm-wlm` already includes it).
-3. Copy `slurm.conf` to every node (`slurm-setup.sh` for the whole cluster does this for the workers; copy it manually if you use the head only) and run on the head:
+3. Copy `slurm.conf` to every node (`head-setup.sh slurm` for the whole cluster does this for the workers; copy it manually if you use the head only) and run on the head:
 
    ```bash
    sudo systemctl enable --now slurmd
@@ -508,7 +495,7 @@ By default the head only schedules. To also use its CPUs for jobs:
    A new node needs a controller restart, not just a reload.
 4. Keep the head responsive. It also runs the scheduler, the NFS server and the desktop. Give it `Weight=100` so workers are used first, and set `CPUs` a little below the real count so a few cores stay free.
 
-Note: `slurm-setup.sh` only handles worker names (`node0`, `node1`, ...), so the head steps above are manual.
+Note: `head-setup.sh slurm` only handles worker names (`node0`, `node1`, ...), so the head steps above are manual.
 
 ---
 
@@ -555,12 +542,12 @@ The scripts were hardened against the errors that came up on a real 15-node clus
 | :--- | :--- |
 | `Could not get lock /var/lib/dpkg/lock-frontend` (automatic upgrade running) | Every `apt-get` waits up to 5 minutes for the lock. `node-setup.sh` turns automatic upgrades off. |
 | Misleading "no internet" hint | The hint reads the real apt error and tells apart: dpkg lock, interrupted install, and a real network problem. |
-| A node drops off the network in the middle of a run | `head-setup.sh` checks each node is still reachable before every step. A lost node is marked FAILED and skipped instead of timing out in every step. `slurm-setup.sh` does the same check before it copies `slurm.conf`. |
+| A node drops off the network in the middle of a run | `head-setup.sh` checks each node is still reachable before every step. A lost node is marked FAILED and skipped instead of timing out in every step. `head-setup.sh slurm` does the same check before it copies `slurm.conf`. |
 | `mount.nfs: an incorrect mount option was specified` | The mount falls back to `modprobe nfs` and a plain NFS v4 mount. If it still fails, the script prints the kernel version, whether a reboot is pending, the real `mount -v` output and `dmesg`. A pending kernel update shows "reboot the node and re-run". |
 | Pending kernel update | `node-setup.sh` warns at the end that a reboot is required. |
 | Node sleeps or suspends | `node-setup.sh` disables sleep, suspend and hibernate targets. |
-| Node reports `NO NETWORK ADDRESS FOUND` | `slurm-setup.sh` clears this old drain flag by resuming the node. |
-| Node unreachable in `slurm-setup.sh` | It tells you if the node does not answer ping at all (power, cable, IP) or only SSH by key fails (run `head-setup.sh`). |
+| Node reports `NO NETWORK ADDRESS FOUND` | `head-setup.sh slurm` clears this old drain flag by resuming the node. |
+| Node unreachable in `head-setup.sh slurm` | It tells you if the node does not answer ping at all (power, cable, IP) or only SSH by key fails (run `head-setup.sh`). |
 
 ---
 
@@ -569,10 +556,8 @@ The scripts were hardened against the errors that came up on a real 15-node clus
 | Script | Run on | Command | Run as | What it does |
 | :--- | :--- | :--- | :--- | :--- |
 | `node-setup.sh` | Each worker | `sudo ./node-setup.sh` | root (re-runs itself with sudo) | Stops automatic upgrades and sleep, static IP via netplan (with backup and automatic restore on failure), disables cloud-init network config, network tests, hostname, `/etc/hosts`, OpenSSH, `slurmd` + `slurm-client`, reboot-required warning |
-| `head-setup.sh` | Head | `bash ./head-setup.sh` | normal user | Reachability check, passwordless SSH, Chrony, `/etc/hosts`, `slurm-wlm`, Munge key sync, NFS server and client mounts; optional single-node mode |
-| `slurm-setup.sh` | Head | `bash ./slurm-setup.sh` | normal user | Pre-flight check per node, `slurm.conf` sync, directories, starts `slurmd` and `slurmctld`, node state report; optional single-node mode |
+| `head-setup.sh` | Head | `bash ./head-setup.sh` | normal user | **Setup:** reachability check, passwordless SSH, Chrony, `/etc/hosts`, `slurm-wlm`, Munge key sync, NFS; optional single-node mode. **`slurm` mode:** pre-flight check per node, `slurm.conf` sync, directories, starts `slurmd` and `slurmctld`, node state report. **`reboot` mode:** asks for the password once, warns about running jobs, skips unreachable nodes, reboots the rest in parallel (`--no-head` never asks about the head) |
 | `node-setup-in-head.sh` | Head | `bash ./node-setup-in-head.sh` | normal user | Same as `head-setup.sh`, plus turns off unattended-upgrades on the head and on every node before installing anything |
-| `rebootall.sh` | Head | `bash ./rebootall.sh [--no-head]` | normal user | Asks for the password once, warns about running Slurm jobs, skips unreachable nodes, reboots all reachable nodes in parallel. `--no-head` never asks about rebooting the head |
 
 Notes:
 
@@ -581,14 +566,7 @@ Notes:
 - The password you type is kept only in memory during the run and wiped on exit.
 - Backups are kept: `/etc/hosts.bak` and `/etc/netplan/*.bak.<timestamp>`.
 - `head-setup.sh` and `node-setup-in-head.sh` are alternatives. You do not need to run both.
-- To use the reboot helper as a normal command on the head:
-
-  ```bash
-  sudo cp rebootall.sh /usr/local/bin/rebootall
-  sudo chmod +x /usr/local/bin/rebootall
-  rebootall --no-head     # workers only
-  ```
-
+- Useful commands on the head: `bash ./head-setup.sh slurm` (start Slurm) and `bash ./head-setup.sh reboot --no-head` (reboot the workers only). For a short command name: `alias cluster-reboot='bash ~/head-setup.sh reboot --no-head'`.
 ---
 
 ## Verify the Cluster
@@ -631,8 +609,8 @@ for n in node{0..14}; do echo -n "$n: "; ssh $n 'findmnt -n -o FSTYPE,SOURCE /mn
 | "munge rejected head's credential" | Different `munge.key` or clock skew | Re-run `head-setup.sh` (copies head's key); check `chrony` and `date` |
 | NFS mount fails | Export or firewall problem | On head: `sudo exportfs -v`, `sudo ufw status`; on node: `showmount -e head` |
 | `mount.nfs: an incorrect mount option was specified` | NFS kernel module missing after a kernel update that was never rebooted | Reboot the node (`sudo reboot`) and re-run. The script prints diagnostics that confirm this |
-| Node shows `inval` | `CPUs` / `RealMemory` in `slurm.conf` exceed the hardware | Run `slurmd -C` on the node. Lower the values (keep `RealMemory` a little below the reported value) or give that node its own `NodeName=` line. Copy `slurm.conf` to all nodes (re-run `slurm-setup.sh`), then `sudo scontrol update nodename=<node> state=resume` |
-| Node drained with `NO NETWORK ADDRESS FOUND` | Flag set before the name resolved | `slurm-setup.sh` clears it. Manually: `getent hosts <node>`, then `sudo scontrol update nodename=<node> state=resume` |
+| Node shows `inval` | `CPUs` / `RealMemory` in `slurm.conf` exceed the hardware | Run `slurmd -C` on the node. Lower the values (keep `RealMemory` a little below the reported value) or give that node its own `NodeName=` line. Copy `slurm.conf` to all nodes (re-run `head-setup.sh slurm`), then `sudo scontrol update nodename=<node> state=resume` |
+| Node drained with `NO NETWORK ADDRESS FOUND` | Flag set before the name resolved | `head-setup.sh slurm` clears it. Manually: `getent hosts <node>`, then `sudo scontrol update nodename=<node> state=resume` |
 | Node shows `down` / `unk*` | `slurmd` cannot reach `slurmctld` | `ping head` from the node, check `ufw status`, `sudo journalctl -u slurmd -n 20` |
 | Job prints `couldn't chdir ... going to /tmp instead` | The job was started from a folder that exists only on head (such as `/home/<user>/...`) | Start jobs from `/mnt/shared` |
 | Job stuck in `PD` | No free resources or node drained | `scontrol show job <id>` |
@@ -648,23 +626,8 @@ sudo tail -f /var/log/slurm/slurmctld.log
 
 ---
 
-# Slurm Cluster Automation
+## Credits and Contributing
 
-This repository is a fork of `sahan-maker/slurm_cluster` by Sahan, adapted and extended by Meshan Nawod for personal cluster automation and lab workflow use.
-
-Original project: https://github.com/sahan-maker/slurm_cluster
-
-This fork keeps the original project context and credits the upstream author while documenting the custom automation work added here.
-
-## Attribution
-
-- Original project: Sahan (`sahan-maker/slurm_cluster`)
-- Fork and customisations: Meshan Nawod
-
-## Contact
-
-For questions about this fork, contact Meshan Nawod at [meshannawodme@gmail.com](mailto:meshannawodme@gmail.com).
-
-## License
-
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+- Original guide and cluster build: **Sahan Prathibha Wijethunga** ([sahanprathibhawije@gmail.com](mailto:sahanprathibhawije@gmail.com))
+- Scripts and updates: **Meshan Nawod** ([meshannawodme@gmail.com](mailto:meshannawodme@gmail.com))
+- Fork and customise the defaults (user, subnet, packages) for your own infrastructure. Issues and pull requests are welcome.
