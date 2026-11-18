@@ -4,6 +4,8 @@ Bash scripts that turn fresh Ubuntu machines into a working **Slurm** cluster: o
 
 Built for a Physics lab computational cluster. Every step prints a clear `[ OK ]` / `[WARN]` / `[FAIL]` message with a hint on how to fix it, and the scripts are safe to re-run. `head-setup.sh` has three modes (setup, `slurm`, `reboot`), and an optional third script (`node-setup-in-head.sh`) repairs nodes that were set up with an older version.
 
+[![Open the Cluster Setup Generator](https://img.shields.io/badge/Cluster_Setup_Generator-Open_in_browser-2ea44f?style=for-the-badge&logo=githubpages&logoColor=white)](https://meshannawod.github.io/slurm-cluster-automation/) ![Bash](https://img.shields.io/badge/Bash-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white) ![Ubuntu 22.04](https://img.shields.io/badge/Ubuntu-22.04-E95420?style=for-the-badge&logo=ubuntu&logoColor=white) ![Slurm](https://img.shields.io/badge/Slurm-26.05-0b5394?style=for-the-badge)
+
 > Want to understand every step by hand first? See the original manual guide: [Setting Up a Slurm Cluster: Complete Beginners Guide](https://github.com/sahan-maker). These scripts automate that guide.
 
 ---
@@ -36,7 +38,7 @@ Desktop PCs stacked on a lab bench and wired to one network switch. One machine 
 
 | Front view | Rear view (cabling) |
 | :---: | :---: |
-| ![Cluster front view: two stacks of three desktop PCs with the head node monitor and keyboard](https://raw.githubusercontent.com/MeshanNawod/slurm_cluster/refs/heads/main/image/cluster-1.jpg) | ![Cluster rear view: blue Ethernet cables from each node to the switch, with power strips](https://raw.githubusercontent.com/MeshanNawod/slurm_cluster/refs/heads/main/image/cluster-2.jpg) |
+| ![Cluster front view: two stacks of three desktop PCs with the head node monitor and keyboard](images/cluster-front.jpg) | ![Cluster rear view: blue Ethernet cables from each node to the switch, with power strips](images/cluster-rear.jpg) |
 
 ```mermaid
 flowchart LR
@@ -66,13 +68,18 @@ flowchart LR
 .
 ├── README.md
 ├── Cluster Setup Generator.html          # Slurm 26.05 Configuration Tool + Cluster Setup Generator (one page)
+├── index.html                            # opens the generator on GitHub Pages
 ├── scripts/
 │   ├── node-setup.sh                     # run on every worker (first)
 │   ├── head-setup.sh                     # run on the head: setup, then "slurm" and "reboot" modes
 │   └── node-setup-in-head.sh             # optional: head-setup.sh + turns off automatic upgrades on all machines
-└── images/
-    ├── cluster-front.jpg
-    └── cluster-rear.jpg
+├── images/
+│   ├── cluster-front.jpg
+│   ├── cluster-rear.jpg
+│   └── generator.png
+└── versions/                             # earlier releases, kept for reference
+    ├── v2.0/                             # separate slurm-setup.sh step
+    └── v3.0/                             # adds rebootall.sh (now the "reboot" mode of head-setup.sh)
 ```
 
 On the USB drive, put the scripts in a folder named **`Slurm`** (the commands below use `/mnt/usb/Slurm/`).
@@ -148,6 +155,10 @@ Optional settings in the same menu:
 ---
 
 ## Cluster Setup Generator and slurm.conf Tool
+
+**Open it online:** [meshannawod.github.io/slurm-cluster-automation](https://meshannawod.github.io/slurm-cluster-automation/) (or open the file from this repo; it works offline).
+
+<img src="images/generator.png" alt="Cluster Setup Generator page with cluster details and IP plan" width="820">
 
 `Cluster Setup Generator.html` is one page with two tabs. **Tab 1** lets you type your cluster details **once** so the scripts do not ask you again. **Tab 2** is the **Slurm 26.05 Configuration Tool**: it builds `slurm.conf`, with node groups for machines that are not identical. One zip contains the scripts and `slurm.conf` together. The page works offline in any browser.
 

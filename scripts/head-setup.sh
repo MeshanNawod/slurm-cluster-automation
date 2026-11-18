@@ -2,7 +2,10 @@
 # =============================================================================
 # head-setup.sh  -  run on the HEAD node as your NORMAL user (not root / sudo):
 #
-#   bash head-setup.sh
+#   bash head-setup.sh                   setup: SSH, time sync, hosts, Slurm packages, munge, NFS
+#                                        (then offers to start Slurm if /etc/slurm/slurm.conf exists)
+#   bash head-setup.sh slurm             start Slurm: copy slurm.conf, start slurmd and slurmctld
+#   bash head-setup.sh reboot [--no-head]  reboot the nodes (--no-head: never reboot this machine)
 #
 # For a range of worker nodes (e.g. node0 ... node7) this script:
 #   0. checks every node is reachable (SSH port open)
@@ -15,7 +18,8 @@
 #      (fixes "munge rejected head's credential")
 #   7. NFS: exports /mnt/shared on head and mounts it on every node
 #
-# Run node-setup.sh on every worker FIRST.
+# Run node-setup.sh on every worker FIRST. Order: node-setup.sh -> head-setup.sh ->
+# create /etc/slurm/slurm.conf -> head-setup.sh slurm
 # ONE missing node: answer the 'Set up only ONE node?' question with its index.
 # /etc/hosts on head and on that node still lists the WHOLE cluster; the IPs head
 # already knows for the other nodes are kept, only the selected node's line is new.
@@ -93,32 +97,55 @@ if [ "$EUID" -eq 0 ]; then
   die "Run this as your normal user (not root / not with sudo)."
 fi
 
+# ---------- Mode ----------
+MODE=all; NO_HEAD=0
+SCRIPT_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+for arg in "$@"; do
+  case "$arg" in
+    all|setup) MODE=all ;;
+    slurm)     MODE=slurm ;;
+    reboot)    MODE=reboot ;;
+    --no-head) NO_HEAD=1 ;;
+    -h|--help)
+      echo "Usage: bash $0 [slurm | reboot [--no-head]]"
+      echo "  (no argument)        set up SSH, time sync, hosts, Slurm packages, munge and NFS"
+      echo "  slurm                copy slurm.conf to the nodes and start slurmd / slurmctld"
+      echo "  reboot [--no-head]   reboot the nodes; --no-head never reboots this machine"
+      exit 0 ;;
+    *) echo "Unknown option: $arg (try --help)" >&2; exit 1 ;;
+  esac
+done
+
 # ---------- Inputs ----------
 step "Questions"
 read -r -p "Cluster user [elec_cluster]: " CUSER
 CUSER=${CUSER:-elec_cluster}
+if [ "$MODE" = all ]; then
 read -r -p "Head IP (e.g. 10.40.52.183): " HEAD_IP
 is_ipv4 "$HEAD_IP" || die "Head IP '$HEAD_IP' is not a valid IPv4 address."
+fi
 read -r -p "Node name prefix [node]: " PREFIX
 PREFIX=${PREFIX:-node}
 [[ "$PREFIX" =~ ^[a-z][a-z0-9-]*$ ]] || die "Prefix '$PREFIX' is invalid (lowercase letters, digits, '-')."
 read -r -p "First node index of the WHOLE cluster [0]: " START
 START=${START:-0}
 read -r -p "Last node index of the WHOLE cluster (e.g. 14): " END
-read -r -p "IP of ${PREFIX}0 (e.g. 10.40.52.175; the head's IP is skipped automatically): " BASE_IP
+[ "$MODE" = all ] && read -r -p "IP of ${PREFIX}0 (e.g. 10.40.52.175; the head's IP is skipped automatically): " BASE_IP
 read -r -s -p "Password (same on all machines): " PASS
 echo
 
 is_int "$START" || die "First node index '$START' is not a number."
 is_int "$END"   || die "Last node index '$END' is not a number (you must enter one)."
 [ "$END" -ge "$START" ] || die "Last index ($END) is smaller than first index ($START)."
-is_ipv4 "$BASE_IP" || die "Base IP '$BASE_IP' is not a valid IPv4 address."
+{ [ "$MODE" != all ] || is_ipv4 "$BASE_IP"; } || die "Base IP '$BASE_IP' is not a valid IPv4 address."
 [ -n "$PASS" ] || die "Password cannot be empty."
 
+if [ "$MODE" = all ]; then
 [ "$BASE_IP" != "$HEAD_IP" ] || die "${PREFIX}0 and the head cannot have the same IP ($HEAD_IP)."
 IP_PREFIX=$(echo "$BASE_IP" | cut -d. -f1-3)
 IP_BASE_LAST=$((10#$(echo "$BASE_IP" | cut -d. -f4)))
 HEAD_LAST=$((10#$(echo "$HEAD_IP" | cut -d. -f4)))
+fi
 
 node_name() { echo "${PREFIX}$1"; }
 declare -A IP_OVERRIDE   # node index -> IP typed by hand (when it does not follow the pattern)
@@ -132,29 +159,35 @@ node_ip() {
   fi
   echo "${IP_PREFIX}.${last}"
 }
+if [ "$MODE" = all ]; then
 LAST_OCTET=$(node_ip "$END" | cut -d. -f4)
 [ "$LAST_OCTET" -le 254 ] \
   || die "Node $END would get IP $(node_ip "$END") which is outside the valid range (max .254)."
+fi
 
 read -r -p "Set up only ONE node? Enter its index (Enter = all nodes $START..$END): " ONLY
 if [ -n "$ONLY" ]; then
   is_int "$ONLY" || die "Node index '$ONLY' is not a number."
   { [ "$ONLY" -ge "$START" ] && [ "$ONLY" -le "$END" ]; } || die "Node index $ONLY is outside the cluster range $START..$END."
   SETUP_START=$ONLY; SETUP_END=$ONLY
-  info "Single-node mode: only ${PREFIX}${ONLY} is set up; the other nodes are not touched."
-  DEFAULT_IP=$(node_ip "$ONLY")
-  read -r -p "IP of ${PREFIX}${ONLY} [$DEFAULT_IP]: " ONLY_IP
-  ONLY_IP=${ONLY_IP:-$DEFAULT_IP}
-  is_ipv4 "$ONLY_IP" || die "IP '$ONLY_IP' is not a valid IPv4 address."
-  [ "$ONLY_IP" != "$HEAD_IP" ] || die "${PREFIX}${ONLY} cannot have the head's IP ($HEAD_IP)."
-  IP_OVERRIDE[$ONLY]=$ONLY_IP
+  info "Single-node mode: only ${PREFIX}${ONLY} is used; the other nodes are not touched."
+  if [ "$MODE" = all ]; then
+    DEFAULT_IP=$(node_ip "$ONLY")
+    read -r -p "IP of ${PREFIX}${ONLY} [$DEFAULT_IP]: " ONLY_IP
+    ONLY_IP=${ONLY_IP:-$DEFAULT_IP}
+    is_ipv4 "$ONLY_IP" || die "IP '$ONLY_IP' is not a valid IPv4 address."
+    [ "$ONLY_IP" != "$HEAD_IP" ] || die "${PREFIX}${ONLY} cannot have the head's IP ($HEAD_IP)."
+    IP_OVERRIDE[$ONLY]=$ONLY_IP
+  fi
 else
   SETUP_START=$START; SETUP_END=$END
 fi
 
 echo
-echo "Head: head ($HEAD_IP)"
-for i in $(seq "$SETUP_START" "$SETUP_END"); do echo "Node: $(node_name "$i") ($(node_ip "$i"))"; done
+echo "Mode: $MODE"
+for i in $(seq "$SETUP_START" "$SETUP_END"); do
+  if [ "$MODE" = all ]; then echo "Node: $(node_name "$i") ($(node_ip "$i"))"; else echo "Node: $(node_name "$i")"; fi
+done
 read -r -p "Continue? [y/N]: " OK
 [[ "$OK" =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 0; }
 
@@ -214,6 +247,8 @@ gen_hosts() { # gen_hosts <own name>
   done
 }
 
+# ---------- STAGE 1: setup (SSH, time sync, hosts, packages, munge, NFS) ----------
+setup_stage() {
 # ---------- 0. Reachability ----------
 step "0. Checking that every node is reachable"
 for i in $(seq "$SETUP_START" "$SETUP_END"); do
@@ -487,9 +522,335 @@ fi
 echo
 if [ "${#FAILED[@]}" -eq 0 ] && [ "${#ISSUES[@]}" -eq 0 ]; then
   ok "All nodes OK. Test: ssh $CUSER@${PREFIX}${SETUP_START}"
-  echo "Next: create /etc/slurm/slurm.conf on head (slurm configurator, Step 4.2 of the guide), then run slurm-setup.sh"
-  exit 0
+  return 0
 fi
 echo "Fix the problems above (power, cable, IP, run node-setup.sh on the node) and run this script again."
 echo "It is safe to re-run: finished steps are simply repeated."
-[ "${#FAILED[@]}" -eq 0 ] || exit 1
+[ "${#FAILED[@]}" -eq 0 ] || return 1
+return 0
+}
+
+# ---------- STAGE 2: start Slurm (old slurm-setup.sh) ----------
+slurm_stage() {
+CONF=/etc/slurm/slurm.conf
+# A slurm.conf made by the generator page sits next to this script: install it.
+if [ ! -s "$CONF" ] && [ -s "$SCRIPT_DIR/slurm.conf" ]; then
+  info "Found $SCRIPT_DIR/slurm.conf (from the generator) - installing it as $CONF"
+  try "Install slurm.conf on head" hsudo install -D -m 644 -o root -g root "$SCRIPT_DIR/slurm.conf" "$CONF" \
+    || die "Could not install $SCRIPT_DIR/slurm.conf as $CONF."
+fi
+if [ ! -s "$CONF" ]; then
+  if [ "$MODE" = all ]; then
+    echo
+    info "Next: create $CONF (tab 2 of the generator page, README Part C) or put slurm.conf next to this script, then run:  bash $0 slurm"
+    return 0
+  fi
+  die "$CONF not found or empty. Create it first (slurm configurator, README Part C)."
+fi
+[ -r "$CONF" ] || die "$CONF is not readable by $USER."
+
+# ---------- 1. Head checks + read slurm.conf ----------
+step "Slurm 1. Checking the head node and $CONF"
+
+# conf_val <Key>: last un-commented value of Key=... in slurm.conf (empty if unset)
+conf_val() {
+  grep -iE "^[[:space:]]*$1[[:space:]]*=" "$CONF" | tail -n1 | cut -d= -f2- \
+    | sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+[ -x /usr/sbin/slurmctld ] || die "slurmctld is not installed on head. Run: sudo apt install -y slurm-wlm"
+ok "slurmctld is installed"
+systemctl is-active --quiet munge || die "munge is not running on head. Run: sudo systemctl enable --now munge"
+munge -n | unmunge >/dev/null 2>&1 || die "munge test failed on head (munge -n | unmunge). Check /etc/munge/munge.key permissions."
+ok "munge works on head"
+
+# Directories come from slurm.conf, with the guide's paths as defaults.
+SLURM_USER=$(conf_val SlurmUser);        SLURM_USER=${SLURM_USER:-slurm}
+STATE_DIR=$(conf_val StateSaveLocation); STATE_DIR=${STATE_DIR:-/var/lib/slurm/slurmctld}
+SPOOL_DIR=$(conf_val SlurmdSpoolDir);    SPOOL_DIR=${SPOOL_DIR:-/var/lib/slurm/slurmd}
+CTLD_LOG=$(conf_val SlurmctldLogFile);   CTLD_LOG=${CTLD_LOG:-/var/log/slurm/slurmctld.log}
+D_LOG=$(conf_val SlurmdLogFile);         D_LOG=${D_LOG:-/var/log/slurm/slurmd.log}
+mapfile -t DIRS < <(printf '%s\n' "$STATE_DIR" "$SPOOL_DIR" "$(dirname "$CTLD_LOG")" "$(dirname "$D_LOG")" | sort -u)
+for d in "${DIRS[@]}"; do
+  case "$d" in
+    /|/var|/var/lib|/var/log|/etc|/usr|/tmp|/home|"") die "Refusing to chown the system directory '$d' (check paths in $CONF)." ;;
+    /*) ;;
+    *)  die "Path '$d' from $CONF is not absolute." ;;
+  esac
+done
+info "Slurm user: $SLURM_USER"
+info "Directories: ${DIRS[*]}"
+printf -v DIRS_Q '%q ' "${DIRS[@]}"
+DIRS_CMD="mkdir -p $DIRS_Q && chown -R $SLURM_USER:$SLURM_USER $DIRS_Q"
+
+# Is this machine really the controller named in slurm.conf?
+CTLD_HOST=$(conf_val SlurmctldHost | sed 's/(.*//')
+[ -n "$CTLD_HOST" ] || CTLD_HOST=$(conf_val ControlMachine)
+if [ -z "$CTLD_HOST" ]; then
+  warn "No SlurmctldHost found in $CONF."
+elif [ "$CTLD_HOST" != "$(hostname -s)" ]; then
+  warn "slurm.conf says the controller is '$CTLD_HOST' but this machine is '$(hostname -s)'. slurmctld will refuse to start."
+else
+  ok "SlurmctldHost matches this machine ($CTLD_HOST)"
+fi
+
+# Does slurm.conf know about every node we are going to set up?
+mapfile -t CONF_NODES < <(
+  grep -iE '^[[:space:]]*NodeName=' "$CONF" \
+    | sed -E 's/^[[:space:]]*NodeName=([^[:space:]]+).*/\1/' \
+    | while read -r spec; do scontrol show hostnames "$spec" 2>/dev/null; done
+)
+if [ "${#CONF_NODES[@]}" -eq 0 ]; then
+  warn "Could not read any NodeName= entries from $CONF."
+else
+  for i in $(seq "$SETUP_START" "$SETUP_END"); do
+    N="${PREFIX}${i}"
+    printf '%s\n' "${CONF_NODES[@]}" | grep -qx "$N" \
+      && ok "$N is defined in slurm.conf" \
+      || warn "$N is NOT listed under NodeName= in slurm.conf - it will not join the cluster."
+  done
+fi
+
+# ---------- 2. Node pre-flight ----------
+step "Slurm 2. Pre-flight check of every node"
+# check_node <name>: prints what is wrong (with the fix) and returns non-zero.
+check_node() {
+  local N=$1 skew
+  ssh $SSH_OPTS "$CUSER@$N" true 2>/dev/null \
+    || {
+         if ping -c1 -W2 "$N" >/dev/null 2>&1; then
+           err "$N: answers ping but SSH by key fails. Run head-setup.sh first (it copies the SSH key)."
+         else
+           err "$N: no reply at all. Powered off, rebooted, cable/switch problem, or the IP changed? Check it, then run this script again."
+         fi
+         return 1
+       }
+  ssh $SSH_OPTS "$CUSER@$N" "test -x /usr/sbin/slurmd" \
+    || { err "$N: slurmd not installed. On $N run: sudo apt install -y slurmd slurm-client"; return 1; }
+  ssh $SSH_OPTS "$CUSER@$N" "id $SLURM_USER >/dev/null 2>&1" \
+    || { err "$N: user '$SLURM_USER' missing (slurm packages not installed properly?)"; return 1; }
+  ssh $SSH_OPTS "$CUSER@$N" "systemctl is-active --quiet munge" \
+    || { err "$N: munge not running. On $N run: sudo systemctl enable --now munge"; return 1; }
+  if ! munge -n | ssh $SSH_OPTS "$CUSER@$N" unmunge >/dev/null 2>&1; then
+    # Find out WHY: different key, or something else (clock, munge needs a restart)?
+    local hk nk
+    hk=$(hsudo sha256sum /etc/munge/munge.key 2>/dev/null | cut -d' ' -f1)
+    nk=$(rsudo "$N" "sha256sum /etc/munge/munge.key" 2>/dev/null | cut -d' ' -f1)
+    if [ -n "$hk" ] && [ "$hk" != "$nk" ]; then
+      err "$N: munge rejected head's credential because $N has a DIFFERENT munge.key."
+      echo "        Fix: run head-setup.sh (step 6 copies head's key to every node), then run this script again." >&2
+    else
+      err "$N: munge rejected head's credential although the key is the same."
+      echo "        Fix: check the clocks (date on head and $N, chrony), then 'sudo systemctl restart munge' on both." >&2
+    fi
+    return 1
+  fi
+  skew=$(( $(ssh $SSH_OPTS "$CUSER@$N" date +%s 2>/dev/null) - $(date +%s) ))
+  if [ "${skew#-}" -gt 5 ]; then
+    warn "$N: clock differs from head by ${skew}s - check chrony."
+  fi
+  ok "$N: ready"
+}
+
+READY=()
+for i in $(seq "$SETUP_START" "$SETUP_END"); do
+  N="${PREFIX}${i}"
+  if check_node "$N"; then READY+=("$N"); else FAILED[$N]="pre-flight failed"; fi
+done
+[ "${#READY[@]}" -gt 0 ] || die "No node passed the pre-flight check. Fix the problems above first."
+if [ "${#FAILED[@]}" -gt 0 ]; then
+  warn "These nodes will be skipped: ${!FAILED[*]}"
+  read -r -p "Continue with the ${#READY[@]} healthy node(s) only? [y/N]: " OK
+  [[ "$OK" =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 0; }
+fi
+
+# ---------- 3. Head directories ----------
+step "Slurm 3. Head: create Slurm directories"
+try "Create directories on head" hsudo bash -c "$DIRS_CMD" \
+  || die "Could not create directories on head (is the '$SLURM_USER' user there? is slurm-wlm installed?)."
+
+# ---------- 4. Workers ----------
+step "Slurm 4. Worker nodes: config, directories, slurmd"
+LOCAL_SUM=$(md5sum "$CONF" | cut -d' ' -f1)
+STARTED=()
+for N in "${READY[@]}"; do
+  echo; info "--- $N ---"
+
+  # The node may have dropped off the network since the pre-flight check.
+  if ! ssh $SSH_OPTS "$CUSER@$N" true >/dev/null 2>&1; then
+    err "$N: lost connection (SSH timed out). Skipped - check power/cable/IP, then run this script again."
+    FAILED[$N]="lost connection"; continue
+  fi
+
+  if ! { scp $SSH_OPTS "$CONF" "$CUSER@$N:/tmp/slurm.conf.new" >/dev/null 2>&1 \
+         && try "Install slurm.conf on $N" rsudo "$N" \
+            "mkdir -p /etc/slurm && install -m 644 -o root -g root /tmp/slurm.conf.new /etc/slurm/slurm.conf && rm -f /tmp/slurm.conf.new"; }; then
+    err "$N: could not copy slurm.conf"
+    FAILED[$N]="slurm.conf copy failed"; continue
+  fi
+
+  REMOTE_SUM=$(ssh $SSH_OPTS "$CUSER@$N" "md5sum /etc/slurm/slurm.conf" 2>/dev/null | cut -d' ' -f1)
+  if [ "$REMOTE_SUM" = "$LOCAL_SUM" ]; then
+    ok "$N: slurm.conf identical to head (checksum match)"
+  else
+    err "$N: slurm.conf differs from head after copy"
+    FAILED[$N]="slurm.conf mismatch"; continue
+  fi
+
+  try "Create directories on $N" rsudo "$N" "$DIRS_CMD" \
+    || { FAILED[$N]="directories failed"; continue; }
+
+  try "Start slurmd on $N" rsudo "$N" "systemctl enable slurmd && systemctl restart slurmd" \
+    || { FAILED[$N]="slurmd start failed"; continue; }
+  sleep 2
+  if ssh $SSH_OPTS "$CUSER@$N" "systemctl is-active --quiet slurmd"; then
+    ok "$N: slurmd is running"
+    STARTED+=("$N")
+  else
+    err "$N: slurmd stopped right after starting. Last log lines:"
+    rsudo "$N" "journalctl -u slurmd -n 8 --no-pager" 2>&1 | indent >&2
+    FAILED[$N]="slurmd not running"
+  fi
+done
+
+# ---------- 5. Controller ----------
+step "Slurm 5. Head: start slurmctld"
+try "Enable and start slurmctld" hsudo bash -c "systemctl enable slurmctld && systemctl restart slurmctld" \
+  || die "Could not start slurmctld (see error above)."
+sleep 3
+if systemctl is-active --quiet slurmctld; then
+  ok "slurmctld is running"
+else
+  err "slurmctld stopped right after starting. Last log lines:"
+  hsudo journalctl -u slurmctld -n 12 --no-pager 2>&1 | indent >&2
+  echo "Common causes: error in slurm.conf, munge problem, wrong SlurmctldHost, missing directories." >&2
+  return 1
+fi
+
+# ---------- 6. Check the cluster ----------
+step "Slurm 6. Waiting for nodes to register (up to 40 s)"
+if [ "${#STARTED[@]}" -gt 0 ]; then
+  for _ in $(seq 1 20); do
+    pending=0
+    for N in "${STARTED[@]}"; do
+      st=$(sinfo -h -N -n "$N" -o '%T' 2>/dev/null | head -n1)
+      [ "$st" = "idle" ] || pending=1
+    done
+    [ "$pending" -eq 0 ] && break
+    sleep 2
+  done
+fi
+
+echo; echo "=============== sinfo ==============="
+sinfo
+echo; echo "=============== scontrol show nodes ==============="
+scontrol show nodes | grep -E "NodeName|State|CPUTot"
+
+echo; step "Result per node"
+for N in "${STARTED[@]}"; do
+  st=$(sinfo -h -N -n "$N" -o '%T' 2>/dev/null | head -n1)
+  # Old 'NO NETWORK ADDRESS FOUND' drain flag (set before the name resolved): clear it.
+  if [[ "$st" == drain* ]] && scontrol show node "$N" 2>/dev/null | grep -q 'NO NETWORK ADDRESS'; then
+    info "$N: clearing the old 'NO NETWORK ADDRESS' drain flag (resume) ..."
+    hsudo scontrol update nodename="$N" state=resume >/dev/null 2>&1
+    sleep 3
+    st=$(sinfo -h -N -n "$N" -o '%T' 2>/dev/null | head -n1)
+  fi
+  case "$st" in
+    idle)
+      ok "$N: idle" ;;
+    "")
+      err "$N: not known to the controller. Is $N listed in slurm.conf NodeName=?"
+      FAILED[$N]="not in slurm.conf" ;;
+    unknown*|down*|*"*")
+      err "$N: state '$st' - slurmd cannot talk to slurmctld."
+      echo "        Check: name resolution ('ping head' on $N), firewall (ufw status), and on $N: sudo journalctl -u slurmd -n 20" >&2
+      FAILED[$N]="state $st" ;;
+    drain*|inval*)
+      err "$N: state '$st'. Reason: $(scontrol show node "$N" | grep -i 'Reason=' | sed 's/^[[:space:]]*//')"
+      echo "        'inval' = CPUs/RealMemory in slurm.conf are bigger than the real hardware: run 'slurmd -C' on $N and fix slurm.conf." >&2
+      echo "        After fixing: sudo scontrol update nodename=$N state=resume" >&2
+      FAILED[$N]="state $st" ;;
+    *)
+      warn "$N: state '$st' (expected 'idle')"
+      FAILED[$N]="state $st" ;;
+  esac
+done
+
+# ---------- Summary ----------
+step "Summary"
+if [ "${#FAILED[@]}" -eq 0 ]; then
+  ok "All nodes done. Every node shows as idle. Test with: srun -w ${PREFIX}${SETUP_START}$([ "$SETUP_START" -ne "$SETUP_END" ] && echo ",...") hostname"
+  return 0
+fi
+err "Problems with:"
+for N in "${!FAILED[@]}"; do echo "    - $N: ${FAILED[$N]}"; done | sort
+echo "Fix the problems above and run:  bash $0 slurm   (it is safe to re-run)."
+return 1
+}
+
+# ---------- STAGE 3: reboot the nodes (old rebootall.sh) ----------
+reboot_stage() {
+  if command -v squeue >/dev/null 2>&1; then
+    local running
+    running=$(squeue -h -t R 2>/dev/null | wc -l)
+    if [ "$running" -gt 0 ]; then
+      warn "$running Slurm job(s) are running. Rebooting will kill them."
+      squeue -t R 2>/dev/null | head -n 10
+    fi
+  fi
+  read -r -p "Reboot ${PREFIX}${SETUP_START} .. ${PREFIX}${SETUP_END}? [y/N]: " OK
+  [[ "$OK" =~ ^[Yy]$ ]] || { echo "Cancelled."; return 0; }
+
+  # The reboot is scheduled 2 seconds ahead in the background, so ssh returns
+  # normally and the exit status tells us whether sudo (the password) worked.
+  reboot_node() {
+    local N=$1
+    if ! ssh $SSH_OPTS "$CUSER@$N" true 2>/dev/null; then
+      echo "[SKIP] $N: no SSH answer (off, no route, or no key login)"
+      return
+    fi
+    if printf '%s\n' "$PASS" | ssh $SSH_OPTS "$CUSER@$N" \
+         "sudo -S -p '' sh -c '(sleep 2; systemctl reboot) >/dev/null 2>&1 &'" 2>/dev/null; then
+      echo "[ OK ] $N: reboot sent"
+    else
+      echo "[FAIL] $N: sudo failed (wrong password, or $CUSER may not use sudo)"
+    fi
+  }
+  local i
+  for i in $(seq "$SETUP_START" "$SETUP_END"); do
+    reboot_node "$(node_name "$i")" &
+  done
+  wait
+
+  echo
+  if [ "$NO_HEAD" -eq 1 ]; then
+    echo "Head not rebooted (--no-head)."
+  else
+    read -r -p "Also reboot the head (this machine) now? [y/N]: " OK
+    if [[ "$OK" =~ ^[Yy]$ ]]; then
+      hsudo systemctl reboot
+      return 0
+    fi
+    echo "Head not rebooted."
+  fi
+  echo "When the nodes are back: sinfo   (if a node stays down: sudo scontrol update nodename=<node> state=resume)"
+  return 0
+}
+
+# ---------- Run ----------
+case "$MODE" in
+  slurm)  slurm_stage;  exit $? ;;
+  reboot) reboot_stage; exit $? ;;
+esac
+setup_stage; rc=$?
+[ "$rc" -eq 0 ] || exit "$rc"
+echo
+if [ -s /etc/slurm/slurm.conf ] || [ -s "$SCRIPT_DIR/slurm.conf" ]; then
+  read -r -p "slurm.conf found. Start Slurm now (copy it to the nodes, start slurmd and slurmctld)? [y/N]: " OK
+  if [[ "$OK" =~ ^[Yy]$ ]]; then slurm_stage; exit $?; fi
+  echo "Start Slurm later with:  bash $0 slurm"
+else
+  slurm_stage
+fi
+exit 0
